@@ -4,6 +4,8 @@
 #include <sys/ptrace.h>
 #include <vector>
 #include <sstream>
+#include "breakpoint.h"
+#include <unordered_map>
 #include "../libs/linenoise.h"
 
 class Debugger
@@ -11,6 +13,7 @@ class Debugger
     private:
         std::string program_name;
         pid_t pid;
+        std::unordered_map<std::intptr_t, Breakpoint> breakpoints;
 
     public:
         Debugger(std::string program_name, pid_t pid) : 
@@ -36,6 +39,9 @@ class Debugger
 
             if (is_prefix(command, "continue")) {
                 continue_execution();
+            } else if (is_prefix(command, "break")) {
+                std::string address(args[1], 2);
+                set_breakpoint_at_address(std::stol(address, 0, 16));
             } else {
                 std::cerr << "Unknown command\n";
             }
@@ -69,4 +75,11 @@ class Debugger
             waitpid(pid, &wait_status, options);
         }
 
+        void set_breakpoint_at_address(std::intptr_t address)
+        {
+            std::cout << "Set breakpoint at address 0x" << std::hex << address << std::endl;
+            Breakpoint breakpoint(pid, address);
+            breakpoint.enable();
+            breakpoints[address] = breakpoint;
+        }
 };
