@@ -10,7 +10,7 @@ uint64_t get_register_value(pid_t pid, Register reg)
     ptrace(PTRACE_GETREGS, pid, nullptr, &regs);
     auto it = std::find_if(
         begin(descriptors), end(descriptors),
-        [reg](auto&&rd) { return rd.r == reg; }
+        [reg](auto&&rd) { return rd.reg == reg; }
     );
     return *(reinterpret_cast<uint64_t*>(&regs) + (it - begin(descriptors)));
 }
