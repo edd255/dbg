@@ -4,7 +4,12 @@ project (dbg)
 add_compile_options(-std=c++14)
 
 include_directories(ext/libelfin libs/linenoise include)
-add_executable(dbg src/main.cpp libs/linenoise/linenoise.c)
+add_executable(dbg 
+   src/main.cpp
+   src/debugger.cpp
+   src/breakpoint.hpp
+   src/registers.cpp
+   libs/linenoise/linenoise.c)
 
 add_custom_target(
    libelfin
