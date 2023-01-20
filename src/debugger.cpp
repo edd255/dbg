@@ -7,10 +7,7 @@
 #include <sstream>
 #include <unordered_map>
 #include "debugger.hpp"
-#include "../libs/linenoise.h"
-
-Debugger::Debugger(std::string program_name, pid_t pid) :
-    program_name{std::move(program_name)}, pid{pid} {}
+#include "../libs/linenoise/linenoise.h"
 
 void Debugger::run()
 {
