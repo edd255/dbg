@@ -1,5 +1,5 @@
-#ifndef DEBUGGER_HPP
-#define DEBUGGER_HPP
+#ifndef DEBUGGER_H
+#define DEBUGGER_H
 
 #include <iostream>
 #include <iomanip>
@@ -11,17 +11,18 @@
 #include <unordered_map>
 #include "breakpoint.hpp"
 #include "registers.hpp"
-#include "../libs/linenoise.h"
+#include "../libs/linenoise/linenoise.h"
 
 class Debugger
-{
+    {
     private:
         std::string program_name;
         pid_t pid;
         std::unordered_map<std::intptr_t, Breakpoint> breakpoints;
 
     public:
-        Debugger(std::string program_name, pid_t pid);
+        Debugger(std::string program_name, pid_t pid) :
+            program_name(std::move(program_name)), pid(pid) {}
         void run();
         void handle_command(const std::string& line);
         std::vector<std::string> split(const std::string& s, char delimiter);
@@ -35,6 +36,6 @@ class Debugger
         void set_program_conter(uint64_t program_counter);
         void step_over_breakpoint();
         void wait_for_signal();
-};
+    };
 
 #endif

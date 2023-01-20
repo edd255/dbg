@@ -1,3 +1,6 @@
+#ifndef REGISTER_H
+#define REGISTER_H
+
 #include <iostream>
 #include <array>
 
@@ -77,3 +80,5 @@ uint64_t get_register_value_from_dwarf_register(pid_t pid, unsigned reg_num);
 std::string get_register_name(Register reg);
 
 Register get_register_from_name(const std::string& name);
+
+#endif
