@@ -14,7 +14,7 @@
 #include "../libs/linenoise/linenoise.h"
 
 class Debugger
-    {
+{
     private:
         std::string program_name;
         pid_t pid;
@@ -36,6 +36,6 @@ class Debugger
         void set_program_conter(uint64_t program_counter);
         void step_over_breakpoint();
         void wait_for_signal();
-    };
+};
 
 #endif
