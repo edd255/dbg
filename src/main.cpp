@@ -2,7 +2,7 @@
 #include <unistd.h>
 #include <sys/ptrace.h>
 #include <sys/personality.h>
-#include "debugger.h"
+#include "debugger.hpp"
 
 void execute_debugee(const std::string& program)
 {
