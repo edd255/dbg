@@ -1,0 +1,6 @@
+[submodule "libs/libelfin"]
+	path = libs/libelfin
+	url = https://github.com/aclements/libelfin
+[submodule "libs/linenoise"]
+	path = libs/linenoise
+	url = https://github.com/antirez/linenoise
