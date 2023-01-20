@@ -13,6 +13,7 @@ class Breakpoint
         uint8_t saved_data;
 
     public:
+        Breakpoint() = default;
         Breakpoint(pid_t pid, std::intptr_t address) :
             pid(pid), address(address), enabled(false), saved_data() {}
 
