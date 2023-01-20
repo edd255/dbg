@@ -1,3 +1,6 @@
+#ifndef BREAKPOINT_H
+#define BREAKPOINT_H
+
 #include <iostream>
 #include <sys/ptrace.h>
 
@@ -34,3 +37,5 @@ class Breakpoint
         auto is_enabled() const -> bool { return enabled; }
         auto get_address() const -> std::intptr_t { return address; }
 };
+
+#endif
