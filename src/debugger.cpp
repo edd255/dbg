@@ -51,23 +51,23 @@ void Debugger::handle_command(const std::string& line)
                 );
         }
     } else if (is_prefix(command, "memory")) {
-    std::string address(args[2], 2);
-    if (is_prefix(args[1], "read")) {
-        std::cout
-            << std::hex
-            << read_memory(std::stol(address, 0, 16))
-            << std::endl;
+        std::string address(args[2], 2);
+        if (is_prefix(args[1], "read")) {
+            std::cout
+                << std::hex
+                << read_memory(std::stol(address, 0, 16))
+                << std::endl;
+        }
+        if (is_prefix(args[1], "write")) {
+            std::string value(args[3], 2);
+            write_memory(
+                    std::stol(address, 0, 16),
+                    std::stol(value, 0, 16)
+                );
+        }
+    } else {
+        std::cerr << "Unknown command\n";
     }
-    if (is_prefix(args[1], "write")) {
-        std::string value(args[3], 2);
-        write_memory(
-                std::stol(address, 0, 16),
-                std::stol(value, 0, 16)
-            );
-    }
-} else {
-    std::cerr << "Unknown command\n";
-}
 }
 
 std::vector<std::string> Debugger::split(const std::string& s, char delimiter)
