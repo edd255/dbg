@@ -1,0 +1,36 @@
+#include <iostream>
+#include <sys/ptrace.h>
+
+class Breakpoint
+{
+    private:
+        pid_t pid;
+        std::intptr_t address;
+        bool enabled;
+        uint8_t saved_data;
+
+    public:
+        Breakpoint(pid_t pid, std::intptr_t address) :
+            pid(pid), address(address), enabled(false), saved_data() {}
+
+        void enable()
+        {
+            auto data = ptrace(PTRACE_PEEKDATA, pid, address, nullptr);
+            saved_data = static_cast<uint8_t>(data & 0xff);
+            uint64_t int3 = 0xcc;
+            uint64_t data_with_int3 = ((data & ~0xff) | int3);
+            ptrace(PTRACE_POKEDATA, pid, address, data_with_int3);
+            enabled = true;
+        }
+
+        void disable()
+        {
+            auto data = ptrace(PTRACE_PEEKDATA, pid, address, nullptr);
+            auto restored_data = ((data & ~0xff) | saved_data);
+            ptrace(PTRACE_POKEDATA, pid, address, restored_data);
+            enabled = false;
+        }
+
+        auto is_enabled() const -> bool { return enabled; }
+        auto get_address() const -> std::intptr_t { return address; }
+};
