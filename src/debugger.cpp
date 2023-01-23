@@ -37,6 +37,7 @@ void Debugger::handle_command(const std::string& line)
             dump_registers();
         } else if (is_prefix(args[1], "read")) {
             std::cout
+                << "0x"
                 << get_register_value(
                     pid,
                     get_register_from_name(args[2])
@@ -108,8 +109,11 @@ void Debugger::set_breakpoint_at_address(std::intptr_t address)
 void Debugger::dump_registers()
 {
     for (const auto& descriptor : descriptors) {
+        std::string tab = "\t";
+        descriptor.name == "orig_rax" ? tab = " " : tab = "\t ";
         std::cout
             << descriptor.name
+            << tab
             << " 0x"
             << std::setfill('0')
             << std::setw(16)
