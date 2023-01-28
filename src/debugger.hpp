@@ -17,12 +17,13 @@ class Debugger
 {
     private:
         std::string program_name;
-        pid_t pid;
+        pid_t process_id;
         std::unordered_map<std::intptr_t, Breakpoint> breakpoints;
 
     public:
-        Debugger(std::string program_name, pid_t pid) :
-            program_name(std::move(program_name)), pid(pid) {}
+        Debugger(std::string program_name, pid_t process_id) :
+            program_name{std::move(program_name)}, process_id{process_id}
+        {}
         void run();
         void handle_command(const std::string& line);
         std::vector<std::string> split(const std::string& s, char delimiter);
