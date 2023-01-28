@@ -19,6 +19,20 @@ int main(int argc, char* argv[])
         std::cerr << "Program name not specified";
         return -1;
     }
+    const std::string usage =
+        "Debugger -- Version 0.0.1\n"
+        "Commands:\n"
+        "\t continue:\t             Step over breakpoint\n"
+        "\t break <addr>:\t\t     Set breakpoint at <addr>\n"
+        "\t register\n"
+        "\t\t dump:               Print register values\n"
+        "\t\t read <reg:          Print value at register <reg>\n"
+        "\t\t write <reg> <val:   Write <val> to register <reg>\n"
+        "\t memory\n"
+        "\t\t read <addr>:        Read value at address <addr>\n"
+        "\t\t write <addr> <val>: Write <val> at address <addr>\n"
+    ;
+    std::cout << usage;
     auto program = argv[1];
     auto pid = fork();
     if (pid == 0) {
