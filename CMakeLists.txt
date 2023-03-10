@@ -1,10 +1,10 @@
-# ==== HEADER =================================================================
+#===== HEADER =================================================================
 
 cmake_minimum_required(VERSION 3.0)
 project(dbg)
 add_compile_options(-std=c++14)
 
-# ==== MAIN EXECUTABLE ========================================================
+#===== MAIN EXECUTABLE ========================================================
 
 include_directories(
     ext/libelfin
@@ -21,7 +21,7 @@ add_executable(
     libs/linenoise/linenoise.c
 )
 
-# ==== EXAMPLES ===============================================================
+#===== EXAMPLES ===============================================================
 
 add_executable(
     hello
@@ -50,7 +50,7 @@ set_target_properties(
     PROPERTIES COMPILE_FLAGS "-g -gdwarf-2 -O0"
 )
 
-# ==== DEPENDENCIES ===========================================================
+#===== DEPENDENCIES ===========================================================
 
 add_custom_target(
     libelfin
