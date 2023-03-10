@@ -4,10 +4,8 @@
 #include <iostream>
 #include <sys/ptrace.h>
 
-namespace dbg 
-{
-    class Breakpoint
-    {
+namespace dbg {
+    class Breakpoint {
         private:
             pid_t process_id;
             std::intptr_t address;

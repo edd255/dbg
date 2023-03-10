@@ -48,8 +48,7 @@ namespace dbg {
         std::uintptr_t address;
     };
 
-    class Debugger
-    {
+    class Debugger {
         private:
             std::string m_program_name;
             pid_t m_process_id;
@@ -76,6 +75,7 @@ namespace dbg {
             void handle_sigtrap(siginfo_t info);
             uint64_t get_offset_program_counter();
             uint64_t offset_dwarf_address(uint64_t address);
+            void print_backtrace();
 
         public:
             Debugger(std::string program_name, pid_t process_id)
