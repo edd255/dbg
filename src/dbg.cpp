@@ -1,11 +1,64 @@
-#include <vector>
-#include <sys/ptrace.h>
-#include <sys/wait.h>
+#include <algorithm>
 #include <fstream>
-#include <iostream>
 #include <iomanip>
+#include <ios>
+#include <iostream>
+#include <sys/personality.h>
+#include <sys/ptrace.h>
+#include <sys/user.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <vector>
 
-#include "debugger.hpp"
+#include "../include/registers.hpp"
+#include "../include/debugger.hpp"
+
+using namespace dbg;
+
+void execute_debugee(const std::string& program)
+{
+    if (ptrace(PTRACE_TRACEME, 0, 0, 0) < 0) {
+        std::cerr << "Error in ptrace\n";
+        return;
+    }
+    execl(program.c_str(), program.c_str(), nullptr);
+}
+
+int main(int argc, char* argv[])
+{
+    if (argc < 2) {
+        std::cerr << "Program name not specified";
+        return -1;
+    }
+    const std::string usage =
+        "Debugger -- Version 0.0.1\n"
+        "Commands:\n"
+        "\t continue:\t             Step over breakpoint\n"
+        "\t break <addr>:\t\t     Set breakpoint at <addr>\n"
+        "\t register\n"
+        "\t\t dump:               Print register values\n"
+        "\t\t read <reg:          Print value at register <reg>\n"
+        "\t\t write <reg> <val:   Write <val> to register <reg>\n"
+        "\t memory\n"
+        "\t\t read <addr>:        Read value at address <addr>\n"
+        "\t\t write <addr> <val>: Write <val> at address <addr>\n"
+    ;
+    std::cout << usage;
+    auto program = argv[1];
+    auto pid = fork();
+    if (pid == 0) {
+        // we're in the child process
+        // execute debugee
+        personality(ADDR_NO_RANDOMIZE);
+        execute_debugee(program);
+    } else if (pid >= 1) {
+        // we're in the parent process
+        // execute debugger
+        std::cout << "Starting debugging process " << pid << '\n';
+        Debugger dbg(program, pid);
+        dbg.run();
+    }
+}
 
 void Debugger::run()
 {
@@ -75,6 +128,28 @@ void Debugger::handle_command(const std::string& line)
         step_over();
     } else if (is_prefix(command, "finish")) {
         step_out();
+    } else if (is_prefix(command, "break")) {
+        if (args[1][0] == '0' && args[1][1] == 'x') {
+            std::string address{args[1], 2};
+            set_breakpoint_at_address(std::stol(address, nullptr, 16));
+        } else if (args[1].find(':') != std::string::npos) {
+            auto file_and_line = split(args[1], ':');
+            set_breakpoint_at_source_line(file_and_line[0], std::stoi(file_and_line[1]));
+        } else {
+            set_breakpoint_at_function(args[1]);
+        }
+    } else if (is_prefix(command, "symbol")) {
+        auto symbols = lookup_symbol(args[1]);
+        for (auto&& _symbol : symbols) {
+            std::cout
+                << _symbol.name
+                << ' '
+                << symbol_to_string(_symbol.type)
+                << " 0x"
+                << std::hex
+                << _symbol.address
+                << std::endl;
+        }
     } else {
         std::cerr << "Unknown command\n";
     }
@@ -402,3 +477,82 @@ void Debugger::step_over()
         remove_breakpoint(address);
     }
 }
+
+void Debugger::set_breakpoint_at_function(const std::string& name)
+{
+    for (const auto& cu : m_debug_info.compilation_units()) {
+        for (const auto& die : cu.root()) {
+            if (die.has(dwarf::DW_AT::name) && at_name(die) == name) {
+                auto low_pc = at_low_pc(die);
+                auto entry = get_line_entry_from_program_counter(low_pc);
+                ++entry; // skip prologue
+                set_breakpoint_at_address(offset_dwarf_address(entry -> address));
+            }
+        }
+    }
+}
+
+bool is_suffix(const std::string& s, const std::string& of) {
+    if (s.size() > of.size()) {
+        return false;
+    }
+    auto diff = of.size() - s.size();
+    return std::equal(s.begin(), s.end(), of.begin() + diff);
+}
+
+void Debugger::set_breakpoint_at_source_line(const std::string& file, unsigned line)
+{
+    for (const auto& compilation_unit : m_debug_info.compilation_units()) {
+        if (is_suffix(file, at_name(compilation_unit.root()))) {
+            const auto& lt = compilation_unit.get_line_table();
+            for (const auto& entry : lt) {
+                if (entry.is_stmt && entry.line == line) {
+                    set_breakpoint_at_address(offset_dwarf_address(entry.address));
+                    return;
+                }
+            }
+        }
+    }
+}
+
+symbol_type to_symbol_type(elf::stt _symbol)
+{
+    switch (_symbol) {
+        case elf::stt::notype: {
+            return symbol_type::notype;
+        }
+        case elf::stt::object: {
+            return symbol_type::object;
+        }
+        case elf::stt::func: {
+            return symbol_type::func;
+        }
+        case elf::stt::section: {
+            return symbol_type::section;
+        }
+        case elf::stt::file: {
+            return symbol_type::file;
+        }
+        default:
+            return symbol_type::notype;
+    }
+}
+
+std::vector<symbol> Debugger::lookup_symbol(const std::string& name)
+{
+    std::vector<symbol> symbols;
+    for (auto& section : m_elf.sections()) {
+        if (1) {
+            continue;
+        }
+        for (auto _symbol : section.as_symtab()) {
+            if (_symbol.get_name() == name) {
+                auto& d = _symbol.get_data();
+                symbols.push_back(symbol{to_symbol_type(d.type()), _symbol.get_name(), d.value});
+            }
+        }
+    }
+
+    return symbols;
+}
+

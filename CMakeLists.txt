@@ -14,10 +14,7 @@ include_directories(
 
 add_executable(
     dbg 
-    src/main.cpp
-    src/debugger.cpp
-    src/breakpoint.hpp
-    src/registers.cpp
+    src/dbg.cpp
     libs/linenoise/linenoise.c
 )
 
@@ -27,14 +24,17 @@ add_executable(
     hello
     examples/hello.cpp
 )
+
 set_target_properties(
     hello
     PROPERTIES COMPILE_FLAGS "-g -gdwarf-2 -O0"
 )
+
 add_executable(
     variable
     examples/variable.cpp
 )
+
 set_target_properties(
     variable
     PROPERTIES COMPILE_FLAGS "-gdwarf-2 -O0"
