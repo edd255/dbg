@@ -275,7 +275,7 @@ void Debugger::wait_for_signal()
 
 dwarf::die Debugger::get_function_from_program_counter(uint64_t program_counter)
 {
-    for (auto &cu : m_debug_info.compilation_units()) {
+    for (auto &cu : m_dwarf.compilation_units()) {
         if (die_pc_range(cu.root()).contains(program_counter)) {
             for (const auto& die : cu.root()) {
                 if (die.tag == dwarf::DW_TAG::subprogram) {
@@ -290,7 +290,7 @@ dwarf::die Debugger::get_function_from_program_counter(uint64_t program_counter)
 }
 
 dwarf::line_table::iterator Debugger::get_line_entry_from_program_counter(uint64_t program_counter) {
-    for (auto &cu : m_debug_info.compilation_units()) {
+    for (auto &cu : m_dwarf.compilation_units()) {
         if (die_pc_range(cu.root()).contains(program_counter)) {
             auto &lt = cu.get_line_table();
             auto it = lt.find_address(program_counter);
@@ -482,7 +482,7 @@ void Debugger::step_over()
 
 void Debugger::set_breakpoint_at_function(const std::string& name)
 {
-    for (const auto& cu : m_debug_info.compilation_units()) {
+    for (const auto& cu : m_dwarf.compilation_units()) {
         for (const auto& die : cu.root()) {
             if (die.has(dwarf::DW_AT::name) && at_name(die) == name) {
                 auto low_pc = at_low_pc(die);
@@ -504,7 +504,7 @@ bool is_suffix(const std::string& s, const std::string& of) {
 
 void Debugger::set_breakpoint_at_source_line(const std::string& file, unsigned line)
 {
-    for (const auto& compilation_unit : m_debug_info.compilation_units()) {
+    for (const auto& compilation_unit : m_dwarf.compilation_units()) {
         if (is_suffix(file, at_name(compilation_unit.root()))) {
             const auto& lt = compilation_unit.get_line_table();
             for (const auto& entry : lt) {

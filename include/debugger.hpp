@@ -53,7 +53,7 @@ namespace dbg {
             std::string m_program_name;
             pid_t m_process_id;
             std::unordered_map<std::intptr_t, Breakpoint> m_breakpoints;
-            dwarf::dwarf m_debug_info;
+            dwarf::dwarf m_dwarf;
             elf::elf m_elf;
             uint64_t m_load_address = 0;
 
@@ -84,7 +84,7 @@ namespace dbg {
                 m_process_id = process_id;
                 auto fd = open(m_program_name.c_str(), O_RDONLY);
                 m_elf = elf::elf{elf::create_mmap_loader(fd)};
-                m_debug_info = dwarf::dwarf{dwarf::elf::create_loader(m_elf)};
+                m_dwarf = dwarf::dwarf{dwarf::elf::create_loader(m_elf)};
             }
             void run();
             void set_breakpoint_at_address(std::intptr_t address);
