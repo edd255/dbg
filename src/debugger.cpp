@@ -65,6 +65,16 @@ void Debugger::handle_command(const std::string& line)
         }
     } else if (is_prefix(command, "exit")) {
         exit(0);
+    } else if (is_prefix(command, "stepi")) {
+        single_step_instruction_with_breakpoint_check();
+        auto line_entry = get_line_entry_from_program_counter(get_program_counter());
+        print_source(line_entry -> file -> path, line_entry -> line);
+    } else if (is_prefix(command, "step")) {
+        step_in();
+    } else if (is_prefix(command, "next")) {
+        step_over();
+    } else if (is_prefix(command, "finish")) {
+        step_out();
     } else {
         std::cerr << "Unknown command\n";
     }
@@ -186,13 +196,13 @@ void Debugger::wait_for_signal()
     }
 }
 
-dwarf::die Debugger::get_function_from_pc(uint64_t pc)
+dwarf::die Debugger::get_function_from_program_counter(uint64_t program_counter)
 {
     for (auto &cu : m_debug_info.compilation_units()) {
-        if (die_pc_range(cu.root()).contains(pc)) {
+        if (die_pc_range(cu.root()).contains(program_counter)) {
             for (const auto& die : cu.root()) {
                 if (die.tag == dwarf::DW_TAG::subprogram) {
-                    if (die_pc_range(die).contains(pc)) {
+                    if (die_pc_range(die).contains(program_counter)) {
                         return die;
                     }
                 }
@@ -202,11 +212,11 @@ dwarf::die Debugger::get_function_from_pc(uint64_t pc)
     throw std::out_of_range("Cannot find function");
 }
 
-dwarf::line_table::iterator Debugger::get_line_entry_from_pc(uint64_t pc) {
+dwarf::line_table::iterator Debugger::get_line_entry_from_program_counter(uint64_t program_counter) {
     for (auto &cu : m_debug_info.compilation_units()) {
-        if (die_pc_range(cu.root()).contains(pc)) {
+        if (die_pc_range(cu.root()).contains(program_counter)) {
             auto &lt = cu.get_line_table();
-            auto it = lt.find_address(pc);
+            auto it = lt.find_address(program_counter);
             if (it == lt.end()) {
                 throw std::out_of_range{"Cannot find line entry"};
             } else {
@@ -285,7 +295,7 @@ void Debugger::handle_sigtrap(siginfo_t info)
     switch (info.si_code) {
         case SI_KERNEL:
         case TRAP_BRKPT: {
-            // put the pc back where it should be
+            // put the program_counter back where it should be
             set_program_counter(get_program_counter() - 1);
             std::cout 
                 << "Hit breakpoint at address 0x" 
@@ -293,7 +303,7 @@ void Debugger::handle_sigtrap(siginfo_t info)
                 << get_program_counter()
                 << std::endl;
             uint64_t offset_pc = offset_load_address(get_program_counter());
-            dwarf::line_table::iterator line_entry = get_line_entry_from_pc(offset_pc);
+            dwarf::line_table::iterator line_entry = get_line_entry_from_program_counter(offset_pc);
             print_source(line_entry->file->path, line_entry->line);
             return;
         }
@@ -304,5 +314,91 @@ void Debugger::handle_sigtrap(siginfo_t info)
             std::cout << "Unknown SIGTRAP code " << info.si_code << std::endl;
             return;
         }
+    }
+}
+
+void Debugger::single_step_instruction()
+{
+    ptrace(PTRACE_SINGLESTEP, m_process_id, nullptr, nullptr);
+    wait_for_signal();
+}
+
+void Debugger::single_step_instruction_with_breakpoint_check()
+{
+    if (m_breakpoints.count(get_program_counter())) {
+        step_over_breakpoint();
+    } else {
+        single_step_instruction();
+    }
+}
+
+void Debugger::step_out()
+{
+    auto frame_pointer = get_register_value(m_process_id, Register::rbp);
+    auto return_address = read_memory(frame_pointer + 8);
+    bool should_remove_breakpoint = false;
+    if (!m_breakpoints.count(return_address)) {
+        set_breakpoint_at_address(return_address);
+        should_remove_breakpoint = true;
+    }
+    continue_execution();
+    if (should_remove_breakpoint) {
+        remove_breakpoint(return_address);
+    }
+}
+
+void Debugger::remove_breakpoint(std::intptr_t address)
+{
+    if (m_breakpoints.at(address).is_enabled()) {
+        m_breakpoints.at(address).disable();
+    }
+    m_breakpoints.erase(address);
+}
+
+void Debugger::step_in()
+{
+    auto line = get_line_entry_from_program_counter(get_offset_program_counter()) -> line;
+    while (get_line_entry_from_program_counter(get_offset_program_counter()) -> line == line) {
+        single_step_instruction_with_breakpoint_check();
+    }
+    auto line_entry = get_line_entry_from_program_counter(get_offset_program_counter());
+    print_source(line_entry -> file -> path, line_entry -> line);
+}
+
+uint64_t Debugger::get_offset_program_counter()
+{
+    return offset_load_address(get_program_counter());
+}
+
+uint64_t Debugger::offset_dwarf_address(uint64_t address)
+{
+    return address + m_load_address;
+}
+
+void Debugger::step_over()
+{
+    auto func = get_function_from_program_counter(get_offset_program_counter());
+    auto func_entry = at_low_pc(func);
+    auto func_end = at_high_pc(func);
+    auto line = get_line_entry_from_program_counter(func_entry);
+    auto start_line = get_line_entry_from_program_counter(get_offset_program_counter());
+    std::vector<std::intptr_t> to_delete{};
+    while (line -> address < func_end) {
+        auto load_address = offset_dwarf_address(line -> address);
+        if (line -> address != start_line -> address && !m_breakpoints.count(load_address)) {
+            set_breakpoint_at_address(load_address);
+            to_delete.push_back(load_address);
+        }
+        ++line;
+    }
+    auto frame_pointer = get_register_value(m_process_id, Register::rbp);
+    auto return_address = read_memory(frame_pointer + 8);
+    if (!m_breakpoints.count(return_address)) {
+        set_breakpoint_at_address(return_address);
+        to_delete.push_back(return_address);
+    }
+    continue_execution();
+    for (auto address : to_delete) {
+        remove_breakpoint(address);
     }
 }
