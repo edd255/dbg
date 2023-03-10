@@ -29,7 +29,7 @@ add_executable(
 )
 set_target_properties(
     hello
-    PROPERTIES COMPILE_FLAGS "-g -O0"
+    PROPERTIES COMPILE_FLAGS "-g -gdwarf-2 -O0"
 )
 add_executable(
     variable
@@ -47,7 +47,7 @@ add_executable(
 
 set_target_properties(
     unwinding
-    PROPERTIES COMPILE_FLAGS "-g -O0"
+    PROPERTIES COMPILE_FLAGS "-g -gdwarf-2 -O0"
 )
 
 # ==== DEPENDENCIES ===========================================================
