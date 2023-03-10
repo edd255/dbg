@@ -230,7 +230,7 @@ void Debugger::initialise_load_address()
         std::getline(map, addr, '-');
 
         // TODO: This line causes a crash
-        m_load_address = std::stoi(addr, nullptr, 16);
+        m_load_address = std::stol(addr, nullptr, 16);
     }
 }
 
