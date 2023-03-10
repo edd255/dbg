@@ -33,12 +33,20 @@ class Debugger
         void set_program_counter(uint64_t program_counter) const;
         void step_over_breakpoint();
         void wait_for_signal();
-        dwarf::die get_function_from_pc(uint64_t pc);
-        dwarf::line_table::iterator get_line_entry_from_pc(uint64_t pc);
+        dwarf::die get_function_from_program_counter(uint64_t program_counter);
+        dwarf::line_table::iterator get_line_entry_from_program_counter(uint64_t program_counter);
         void initialise_load_address();
         uint64_t offset_load_address(uint64_t addr) const;
         siginfo_t get_signal_info() const;
         void handle_sigtrap(siginfo_t info);
+        void single_step_instruction();
+        void single_step_instruction_with_breakpoint_check();
+        void step_out();
+        void remove_breakpoint(std::intptr_t address);
+        void step_in();
+        uint64_t get_offset_program_counter();
+        uint64_t offset_dwarf_address(uint64_t address);
+        void step_over();
 
     public:
         Debugger(std::string program_name, pid_t process_id)
