@@ -14,3 +14,9 @@ Usually, you set up `ptrace` the following way:
 The parent now controls the child. The system calls offers a ton of actions that can be executed using requests à la `PTRACE_foo`.
 
 The next thing debuggers usually support are breakpoints which can be implemented using interrupts. Operating systems provide `interrupt` handling for debuggers, which is encoded as the single-byte instruction `0xCC`. Basically, an interrupt is a request for the processor to halt. The idea here is to replace the instruction at a specific instruction with `0xCC`. If we want to execute our original instruction again, the `interrupt` handler restores the original byte, and eventually manipulates the `rip` register to continue at the original position.
+
+## TODO
+- [ ] Documentation
+- [ ] Technical overview of the features
+- [ ] Using a package manager
+- [ ] Using a sane build system
