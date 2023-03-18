@@ -152,6 +152,8 @@ void Debugger::handle_command(const std::string& line)
         }
     } else if (is_prefix(command, "backtrace")) {
         print_backtrace();
+    } else if (is_prefix(command, "variables")) {
+        read_variables();
     } else {
         std::cerr << "Unknown command\n";
     }
@@ -579,5 +581,69 @@ void Debugger::print_backtrace()
         output_frame(current_func);
         frame_pointer = read_memory(frame_pointer);
         return_address = read_memory(frame_pointer + 8);
+    }
+}
+
+class ptrace_expr_context : public dwarf::expr_context {
+    public:
+        ptrace_expr_context(pid_t process_id) : m_process_id{process_id} {}
+
+        dwarf::taddr reg(unsigned reg_num) override 
+        {
+            struct user_regs_struct regs;
+            ptrace(PTRACE_GETREGS, m_process_id, nullptr, &regs);
+            return regs.rip;
+        }
+
+        dwarf::taddr deref_size(dwarf::taddr address, unsigned size) override
+        {
+            // TODO take into account size
+            return ptrace(PTRACE_PEEKDATA, m_process_id, address, nullptr);
+        }
+
+    private:
+        pid_t m_process_id;
+};
+
+void Debugger::read_variables()
+{
+    using namespace dwarf;
+
+    auto func = get_function_from_program_counter(get_offset_program_counter());
+    for (const auto& die : func) {
+        if (die.tag == DW_TAG::variable) {
+            auto loc_val = die[DW_AT::location];
+            if (loc_val.get_type() == value::type::exprloc) {
+                ptrace_expr_context context {m_process_id};
+                auto result = loc_val.as_exprloc().evaluate(&context);
+                switch (result.location_type) {
+                    case expr_result::type::address: {
+                        auto value = read_memory(result.value);
+                        std::cout
+                            << at_name(die)
+                            << "(0x"
+                            << std::hex
+                            << result.value
+                            << ") ="
+                            << value
+                            << std::endl;
+                    }
+                    case expr_result::type::reg: {
+                        auto value = get_register_value_from_dwarf_register(m_process_id, result.value);
+                        std::cout
+                            << at_name(die)
+                            << " (reg "
+                            << result.value
+                            << ") = "
+                            << value
+                            << std::endl;
+                        break;
+                    }
+                    default: {
+                        throw std::runtime_error("Unhandled variable location");
+                    }
+                }
+            }
+        }
     }
 }

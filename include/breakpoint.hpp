@@ -14,12 +14,9 @@ namespace dbg {
 
         public:
             Breakpoint() = default;
-            Breakpoint(pid_t process_id, std::intptr_t address)
-            {
-                m_process_id = process_id;
-                m_address = address;
-                m_enabled = false;
-            }
+            Breakpoint(pid_t process_id, std::intptr_t address) : 
+                m_process_id{process_id}, m_address{address}, m_enabled{false}, m_saved_data{} 
+            {}
 
             void enable()
             {
