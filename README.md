@@ -20,3 +20,5 @@ The next thing debuggers usually support are breakpoints which can be implemente
 - [ ] Technical overview of the features
 - [ ] Using a package manager
 - [ ] Using a sane build system
+- [ ] Optimized, debugging and sanitized binary
+- [ ] Tests
