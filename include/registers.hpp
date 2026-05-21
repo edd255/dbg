@@ -1,10 +1,10 @@
-#ifndef REGISTER_H
-#define REGISTER_H
+#pragma once
 
-#include <algorithm>
 #include <array>
-#include <iostream>
-#include <sys/ptrace.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <sys/user.h>
 
 namespace dbg {
@@ -42,10 +42,10 @@ namespace dbg {
     struct Descriptor {
         Register reg;
         int dwarf;
-        std::string name;
+        std::string_view name;
     };
 
-    const std::array<Descriptor, registers> descriptors {{
+    inline constexpr std::array<Descriptor, registers> descriptors {{
         { Register::r15,      15,  "r15"      },
         { Register::r14,      14,  "r14"      },
         { Register::r13,      13,  "r13"      },
@@ -75,59 +75,20 @@ namespace dbg {
         { Register::gs,       55,  "gs"       },
     }};
 
-    uint64_t get_register_value(pid_t pid, Register reg)
-    {
-        user_regs_struct regs;
-        ptrace(PTRACE_GETREGS, pid, nullptr, &regs);
-        auto it = std::find_if(
-            begin(descriptors), end(descriptors),
-            [reg](auto&&rd) { return rd.reg == reg; }
-        );
-        return *(reinterpret_cast<uint64_t*>(&regs) + (it - begin(descriptors)));
-    }
+    [[nodiscard]]
+    std::uint64_t read_register_value(const user_regs_struct& regs, Register reg);
 
+    void write_register_value(user_regs_struct& regs, Register reg, std::uint64_t value);
 
-    void set_register_value(pid_t pid, Register reg, uint64_t value)
-    {
-        user_regs_struct regs;
-        ptrace(PTRACE_GETREGS, pid, nullptr, &regs);
-        auto it = std::find_if(
-            begin(descriptors), end(descriptors),
-            [reg](auto&& rd) { return rd.reg == reg; }
-        );
-        *(reinterpret_cast<uint64_t*>(&regs) + (it - begin(descriptors))) = value;
-        ptrace(PTRACE_SETREGS, pid, nullptr, &regs);
-    }
+    [[nodiscard]]
+    std::uint64_t get_register_value_from_dwarf_register(const user_regs_struct& regs, unsigned reg_num);
 
-    uint64_t get_register_value_from_dwarf_register(pid_t pid, unsigned reg_num)
-    {
-        auto it = std::find_if(
-            begin(descriptors), end(descriptors),
-            [reg_num](auto&& rd) { return rd.dwarf == reg_num; }
-        );
-        if (it == end(descriptors)) {
-            throw std::out_of_range("Unknown dwarf rgister");
-        }
-        return get_register_value(pid, it -> reg);
-    }
+    [[nodiscard]]
+    std::string_view get_register_name(Register reg);
 
-    std::string get_register_name(Register reg)
-    {
-        auto it = std::find_if(
-            begin(descriptors), end(descriptors),
-            [reg](auto&& rd) { return rd.reg == reg; }
-        );
-        return it -> name;
-    }
+    [[nodiscard]]
+    std::optional<Register> find_register_from_name(std::string_view name);
 
-    Register get_register_from_name(const std::string& name)
-    {
-        auto it = std::find_if(
-            begin(descriptors), end(descriptors),
-            [name](auto&& rd) { return rd.name == name; }
-        );
-        return it -> reg;
-    }
+    [[nodiscard]]
+    Register get_register_from_name(std::string_view name);
 }
-
-#endif

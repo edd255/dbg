@@ -1,647 +1,465 @@
-#include <algorithm>
-#include <fstream>
-#include <iomanip>
-#include <ios>
-#include <iostream>
-#include <sys/personality.h>
-#include <sys/ptrace.h>
-#include <sys/user.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <vector>
-
-#include "../include/registers.hpp"
 #include "../include/debugger.hpp"
 
-using namespace dbg;
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <memory>
+#include <print>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
 
-void execute_debugee(const std::string& program)
-{
-    if (ptrace(PTRACE_TRACEME, 0, 0, 0) < 0) {
-        std::cerr << "Error in ptrace\n";
-        return;
-    }
-    execl(program.c_str(), program.c_str(), nullptr);
-}
+#include "../libs/linenoise/linenoise.h"
 
-int main(int argc, char* argv[])
-{
-    if (argc < 2) {
-        std::cerr << "Program name not specified";
-        return -1;
-    }
-    const std::string usage =
-        "Debugger -- Version 0.0.1\n"
-        "Commands:\n"
-        "\t continue:\t             Step over breakpoint\n"
-        "\t break <addr>:\t\t     Set breakpoint at <addr>\n"
-        "\t register\n"
-        "\t\t dump:               Print register values\n"
-        "\t\t read <reg:          Print value at register <reg>\n"
-        "\t\t write <reg> <val:   Write <val> to register <reg>\n"
-        "\t memory\n"
-        "\t\t read <addr>:        Read value at address <addr>\n"
-        "\t\t write <addr> <val>: Write <val> at address <addr>\n"
-    ;
-    std::cout << usage;
-    auto program = argv[1];
-    auto pid = fork();
-    if (pid == 0) {
-        // we're in the child process
-        // execute debugee
-        personality(ADDR_NO_RANDOMIZE);
-        execute_debugee(program);
-    } else if (pid >= 1) {
-        // we're in the parent process
-        // execute debugger
-        std::cout << "Starting debugging process " << pid << '\n';
-        Debugger dbg(program, pid);
-        dbg.run();
-    }
-}
+namespace dbg {
+    namespace {
+        template <class... Ts>
+        struct overloaded : Ts... {
+            using Ts::operator()...;
+        };
 
-void Debugger::run()
-{
-    wait_for_signal();
-    initialise_load_address();
-    char* line = nullptr;
-    while ((line = linenoise("> ")) != nullptr) {
-        handle_command(line);
-        linenoiseHistoryAdd(line);
-        linenoiseFree(line);
-    }
-}
+        template <class... Ts>
+        overloaded(Ts...) -> overloaded<Ts...>;
 
-void Debugger::handle_command(const std::string& line)
-{
-    auto args = split(line, ' ');
-    auto command = args[0];
-
-    if (is_prefix(command, "continue")) {
-        continue_execution();
-    } else if (is_prefix(command, "break")) {
-        std::string address {args[1], 2};
-        set_breakpoint_at_address(std::stol(address, nullptr, 16));
-    } else if (is_prefix(command, "register")) {
-        if (is_prefix(args[1], "dump")) {
-            dump_registers();
-        } else if (is_prefix(args[1], "read")) {
-            std::cout
-                << "0x"
-                << get_register_value(
-                        m_process_id,
-                        get_register_from_name(args[2])
-                )
-                << std::endl;
-        } else if (is_prefix(args[1], "write")) {
-            std::string val(args[3], 2);
-            set_register_value(
-                    m_process_id,
-                    get_register_from_name(args[2]),
-                    std::stol(val, nullptr, 16)
-                );
-        }
-    } else if (is_prefix(command, "memory")) {
-        std::string address(args[2], 2);
-        if (is_prefix(args[1], "read")) {
-            std::cout
-                << std::hex
-                << read_memory(std::stol(address, nullptr, 16))
-                << std::endl;
-        }
-        if (is_prefix(args[1], "write")) {
-            std::string value(args[3], 2);
-            write_memory(
-                    std::stol(address, nullptr, 16),
-                    std::stol(value, nullptr, 16)
-            );
-        }
-    } else if (is_prefix(command, "exit")) {
-        exit(0);
-    } else if (is_prefix(command, "stepi")) {
-        single_step_instruction_with_breakpoint_check();
-        auto line_entry = get_line_entry_from_program_counter(get_program_counter());
-        print_source(line_entry -> file -> path, line_entry -> line);
-    } else if (is_prefix(command, "step")) {
-        step_in();
-    } else if (is_prefix(command, "next")) {
-        step_over();
-    } else if (is_prefix(command, "finish")) {
-        step_out();
-    } else if (is_prefix(command, "break")) {
-        if (args[1][0] == '0' && args[1][1] == 'x') {
-            std::string address{args[1], 2};
-            set_breakpoint_at_address(std::stol(address, nullptr, 16));
-        } else if (args[1].find(':') != std::string::npos) {
-            auto file_and_line = split(args[1], ':');
-            set_breakpoint_at_source_line(file_and_line[0], std::stoi(file_and_line[1]));
-        } else {
-            set_breakpoint_at_function(args[1]);
-        }
-    } else if (is_prefix(command, "symbol")) {
-        auto symbols = lookup_symbol(args[1]);
-        for (auto&& _symbol : symbols) {
-            std::cout
-                << _symbol.name
-                << ' '
-                << symbol_to_string(_symbol.type)
-                << " 0x"
-                << std::hex
-                << _symbol.address
-                << std::endl;
-        }
-    } else if (is_prefix(command, "backtrace")) {
-        print_backtrace();
-    } else if (is_prefix(command, "variables")) {
-        read_variables();
-    } else {
-        std::cerr << "Unknown command\n";
-    }
-}
-
-std::vector<std::string> Debugger::split(const std::string& s, char delimiter)
-{
-    std::vector<std::string> out{};
-    std::stringstream ss {s};
-    std::string item;
-    while (std::getline(ss, item, delimiter)) {
-        out.push_back(item);
-    }
-    return out;
-}
-
-bool Debugger::is_prefix(const std::string& s, const std::string& of)
-{
-    if (s.size() > of.size()) {
-        return false;
-    }
-
-    return std::equal(s.begin(), s.end(), of.begin());
-}
-
-void Debugger::continue_execution()
-{
-    step_over_breakpoint();
-    ptrace(PTRACE_CONT, m_process_id, nullptr, nullptr);
-    wait_for_signal();
-}
-
-void Debugger::set_breakpoint_at_address(std::intptr_t address)
-{
-    std::cout
-        << "Set breakpoint at address 0x"
-        << std::hex
-        << address
-        << std::endl;
-    Breakpoint breakpoint {m_process_id, address};
-    breakpoint.enable();
-    m_breakpoints[address] = breakpoint;
-}
-
-void Debugger::dump_registers() const
-{
-    for (const auto& descriptor : descriptors) {
-        std::string tab = "\t";
-        descriptor.name == "orig_rax" ? tab = " " : tab = "\t ";
-        std::cout
-            << descriptor.name
-            << tab
-            << " 0x"
-            << std::setfill('0')
-            << std::setw(16)
-            << std::hex
-            << get_register_value(m_process_id, descriptor.reg)
-            << std::endl;
-    }
-}
-
-uint64_t Debugger::read_memory(uint64_t address) const
-{
-    return ptrace(PTRACE_PEEKDATA, m_process_id, address, nullptr);
-}
-
-void Debugger::write_memory(uint64_t address, uint64_t value) const
-{
-    ptrace(PTRACE_POKEDATA, m_process_id, address, value);
-}
-
-uint64_t Debugger::get_program_counter() const
-{
-    return get_register_value(m_process_id, Register::rip);
-}
-
-void Debugger::set_program_counter(uint64_t program_counter) const
-{
-    set_register_value(m_process_id, Register::rip, program_counter);
-}
-
-void Debugger::step_over_breakpoint()
-{
-    if (m_breakpoints.count(get_program_counter())) {
-        auto& breakpoint = m_breakpoints[get_program_counter()];
-        if (breakpoint.is_enabled()) {
-            breakpoint.disable();
-            ptrace(PTRACE_SINGLESTEP, m_process_id, nullptr, nullptr);
-            wait_for_signal();
-            breakpoint.enable();
+        [[nodiscard]] 
+        const char* signal_name(int signal_number) {
+            return strsignal(signal_number);
         }
     }
-}
 
-void Debugger::wait_for_signal()
-{
-    int wait_status;
-    auto options = 0;
-    waitpid(m_process_id, &wait_status, options);
-    auto siginfo = get_signal_info();
-    switch (siginfo.si_signo) {
-        case SIGTRAP: {
-            handle_sigtrap(siginfo);
-            break;
-        }
-        case SIGSEGV: {
-            std::cout
-                << "Segfault. Reason: "
-                << siginfo.si_code
-                << std::endl;
-            break;
-        }
-        default: {
-            std::cout
-                << "Got signal "
-                << strsignal(siginfo.si_signo)
-                << std::endl;
-        }
-    }
-}
+    Debugger::Debugger(std::string program_name, pid_t process_id)
+        : m_program_name{std::move(program_name)},
+          m_tracee{process_id},
+          m_debug_info{m_program_name}
+    {}
 
-dwarf::die Debugger::get_function_from_program_counter(uint64_t program_counter)
-{
-    for (auto &cu : m_dwarf.compilation_units()) {
-        if (die_pc_range(cu.root()).contains(program_counter)) {
-            for (const auto& die : cu.root()) {
-                if (die.tag == dwarf::DW_TAG::subprogram) {
-                    if (die_pc_range(die).contains(program_counter)) {
-                        return die;
-                    }
+    Debugger::~Debugger() noexcept {
+        if (m_process_state != StopReason::stopped) {
+            return;
+        }
+
+        for (auto& [address, breakpoint] : m_breakpoints) {
+            try {
+                if (breakpoint.is_enabled()) {
+                    breakpoint.disable();
                 }
-            }
-        }
-    }
-    throw std::out_of_range("Cannot find function");
-}
-
-dwarf::line_table::iterator Debugger::get_line_entry_from_program_counter(uint64_t program_counter) {
-    for (auto &cu : m_dwarf.compilation_units()) {
-        if (die_pc_range(cu.root()).contains(program_counter)) {
-            auto &lt = cu.get_line_table();
-            auto it = lt.find_address(program_counter);
-            if (it == lt.end()) {
-                throw std::out_of_range{"Cannot find line entry"};
-            } else {
-                return it;
+            } catch (...) {
             }
         }
     }
 
-    throw std::out_of_range{"Cannot find line entry"};
-}
-
-void Debugger::initialise_load_address()
-{
-    // If this is a dynamic library, e.g. a PIE
-    if (m_elf.get_hdr().type == elf::et::dyn) {
-        // The load address if found in /proc/<pid>/maps
-        std::ifstream map("/proc/" + std::to_string(m_process_id) + "/maps");
-
-        // Read the first address from the file
-        std::string addr;
-        std::getline(map, addr, '-');
-
-        // TODO: This line causes a crash
-        m_load_address = std::stol(addr, nullptr, 16);
-    }
-}
-
-uint64_t Debugger::offset_load_address(uint64_t addr) const
-{
-    return addr - m_load_address;
-}
-
-void Debugger::print_source(const std::string& file_name, unsigned line, unsigned n_lines_context)
-{
-    std::ifstream file{file_name};
-
-    // Work out a window around the desired line
-    auto start_line = line <= n_lines_context ? 1 : line - n_lines_context;
-    auto end_line = line + n_lines_context + (line < n_lines_context ? n_lines_context - line : 0) + 1;
-    char c{};
-    auto current_line = 1u;
-
-    // Skip lines up until start_line
-    while (current_line != start_line && file.get(c)) {
-        if (c == '\n') {
-            ++current_line;
-        }
-    }
-
-    // Output cursor if we're at the current line
-    std::cout << (current_line == line ? "> " : " ");
-
-    // Write lines up until end_line
-    while (current_line <= end_line && file.get(c)) {
-        std::cout << c;
-        if (c == '\n') {
-            ++current_line;
-            // Output cursor if we're at the current line
-            std::cout << (current_line == line ? "> " : " ");
-        }
-    }
-    std::cout << std::endl;
-}
-
-siginfo_t Debugger::get_signal_info() const
-{
-    siginfo_t info;
-    ptrace(PTRACE_GETSIGINFO, m_process_id, nullptr, &info);
-    return info;
-}
-
-// TODO: There are a bunch of different signals and flavours of signals which
-// you could handle, see man sigaction
-void Debugger::handle_sigtrap(siginfo_t info)
-{
-    switch (info.si_code) {
-        case SI_KERNEL:
-        case TRAP_BRKPT: {
-            // put the program_counter back where it should be
-            set_program_counter(get_program_counter() - 1);
-            std::cout 
-                << "Hit breakpoint at address 0x" 
-                << std::hex 
-                << get_program_counter()
-                << std::endl;
-            uint64_t offset_pc = offset_load_address(get_program_counter());
-            dwarf::line_table::iterator line_entry = get_line_entry_from_program_counter(offset_pc);
-            print_source(line_entry->file->path, line_entry->line);
+    void Debugger::run() {
+        wait_for_signal();
+        if (m_process_state != StopReason::stopped) {
             return;
         }
-        case TRAP_TRACE: {
-            return;
-        }
-        default: {
-            std::cout << "Unknown SIGTRAP code " << info.si_code << std::endl;
-            return;
+        initialise_load_address();
+        using LinePtr = std::unique_ptr<char, decltype(&linenoiseFree)>;
+        while (!m_should_exit) {
+            LinePtr line{linenoise("> "), linenoiseFree};
+            if (!line) {
+                break;
+            }
+            try {
+                auto command = parse_command(line.get());
+                if (!command) {
+                    std::println(stderr, "{}", command.error().message);
+                } else {
+                    execute(*command);
+                }
+            } catch (const std::exception& e) {
+                std::println(stderr, "{}", e.what());
+            }
+            linenoiseHistoryAdd(line.get());
         }
     }
-}
 
-void Debugger::single_step_instruction()
-{
-    ptrace(PTRACE_SINGLESTEP, m_process_id, nullptr, nullptr);
-    wait_for_signal();
-}
+    void Debugger::execute(const Command& command) {
+        std::visit(
+                overloaded{
+                        [] (const NoopCommand&) {},
+                        [this] (const ContinueCommand&) { continue_execution(); },
+                        [this] (const BreakAddressCommand& cmd) { set_breakpoint_at_address(cmd.address); },
+                        [this] (const BreakSourceCommand& cmd) { set_breakpoint_at_source_line(cmd.file, cmd.line); },
+                        [this] (const BreakFunctionCommand& cmd) { set_breakpoint_at_function(cmd.name); },
+                        [this] (const RegisterDumpCommand&) { dump_registers(); },
+                        [this] (const RegisterReadCommand& cmd) {
+                            std::println("0x{:x}", m_tracee.read_register(cmd.reg));
+                        },
+                        [this] (const RegisterWriteCommand& cmd) {
+                            m_tracee.write_register(cmd.reg, cmd.value);
+                        },
+                        [this] (const MemoryReadCommand& cmd) {
+                            std::println("{:x}", m_tracee.read_word(cmd.address));
+                        },
+                        [this] (const MemoryWriteCommand& cmd) {
+                            m_tracee.write_word(cmd.address, cmd.value);
+                        },
+                        [this] (const ExitCommand&) { m_should_exit = true; },
+                        [this] (const StepInstructionCommand&) {
+                            single_step_instruction_with_breakpoint_check();
+                            print_source_from_program_counter(m_tracee.program_counter());
+                        },
+                        [this] (const StepInCommand&) { step_in(); },
+                        [this] (const StepOverCommand&) { step_over(); },
+                        [this] (const StepOutCommand&) { step_out(); },
+                        [this] (const SymbolCommand& cmd) {
+                            for (const auto& symbol : m_debug_info.lookup_symbol(cmd.name)) {
+                                std::println(
+                                        "{} {} 0x{:x}",
+                                        symbol.name,
+                                        symbol_to_string(symbol.type),
+                                        symbol.address
+                                );
+                            }
+                        },
+                        [this] (const BacktraceCommand&) { print_backtrace(); },
+                        [this] (const VariablesCommand&) { read_variables(); },
+                },
+                command
+        );
+    }
 
-void Debugger::single_step_instruction_with_breakpoint_check()
-{
-    if (m_breakpoints.count(get_program_counter())) {
+    void Debugger::continue_execution() {
+        if (m_process_state != StopReason::stopped) {
+            std::println(stderr, "Process is not running");
+            return;
+        }
+
         step_over_breakpoint();
-    } else {
-        single_step_instruction();
+        m_tracee.resume();
+        wait_for_signal();
     }
-}
 
-void Debugger::step_out()
-{
-    auto frame_pointer = get_register_value(m_process_id, Register::rbp);
-    auto return_address = read_memory(frame_pointer + 8);
-    bool should_remove_breakpoint = false;
-    if (!m_breakpoints.count(return_address)) {
-        set_breakpoint_at_address(return_address);
-        should_remove_breakpoint = true;
-    }
-    continue_execution();
-    if (should_remove_breakpoint) {
-        remove_breakpoint(return_address);
-    }
-}
+    void Debugger::set_breakpoint_at_address(RuntimeAddress address) {
+        std::println("Set breakpoint at address 0x{:x}", address.value);
 
-void Debugger::remove_breakpoint(std::intptr_t address)
-{
-    if (m_breakpoints.at(address).is_enabled()) {
-        m_breakpoints.at(address).disable();
-    }
-    m_breakpoints.erase(address);
-}
-
-void Debugger::step_in()
-{
-    auto line = get_line_entry_from_program_counter(get_offset_program_counter()) -> line;
-    while (get_line_entry_from_program_counter(get_offset_program_counter()) -> line == line) {
-        single_step_instruction_with_breakpoint_check();
-    }
-    auto line_entry = get_line_entry_from_program_counter(get_offset_program_counter());
-    print_source(line_entry -> file -> path, line_entry -> line);
-}
-
-uint64_t Debugger::get_offset_program_counter()
-{
-    return offset_load_address(get_program_counter());
-}
-
-uint64_t Debugger::offset_dwarf_address(uint64_t address)
-{
-    return address + m_load_address;
-}
-
-void Debugger::step_over()
-{
-    auto func = get_function_from_program_counter(get_offset_program_counter());
-    auto func_entry = at_low_pc(func);
-    auto func_end = at_high_pc(func);
-    auto line = get_line_entry_from_program_counter(func_entry);
-    auto start_line = get_line_entry_from_program_counter(get_offset_program_counter());
-    std::vector<std::intptr_t> to_delete{};
-    while (line -> address < func_end) {
-        auto load_address = offset_dwarf_address(line -> address);
-        if (line -> address != start_line -> address && !m_breakpoints.count(load_address)) {
-            set_breakpoint_at_address(load_address);
-            to_delete.push_back(load_address);
+        auto [it, inserted] = m_breakpoints.try_emplace(address, m_tracee, address);
+        if (!it->second.is_enabled()) {
+            it->second.enable();
         }
-        ++line;
     }
-    auto frame_pointer = get_register_value(m_process_id, Register::rbp);
-    auto return_address = read_memory(frame_pointer + 8);
-    if (!m_breakpoints.count(return_address)) {
-        set_breakpoint_at_address(return_address);
-        to_delete.push_back(return_address);
-    }
-    continue_execution();
-    for (auto address : to_delete) {
-        remove_breakpoint(address);
-    }
-}
 
-void Debugger::set_breakpoint_at_function(const std::string& name)
-{
-    for (const auto& cu : m_dwarf.compilation_units()) {
-        for (const auto& die : cu.root()) {
-            if (die.has(dwarf::DW_AT::name) && at_name(die) == name) {
-                auto low_pc = at_low_pc(die);
-                auto entry = get_line_entry_from_program_counter(low_pc);
-                ++entry; // skip prologue
-                set_breakpoint_at_address(offset_dwarf_address(entry -> address));
+    void Debugger::dump_registers() const {
+        auto regs = m_tracee.registers();
+
+        for (const auto& descriptor : descriptors) {
+            auto tab = descriptor.name == "orig_rax" ? " " : "\t ";
+            std::println("{}{} 0x{:016x}", descriptor.name, tab, read_register_value(regs, descriptor.reg));
+        }
+    }
+
+    StopInfo Debugger::wait_for_signal() {
+        auto stop = m_tracee.wait();
+        m_process_state = stop.reason;
+
+        switch (stop.reason) {
+            case StopReason::exited: {
+                std::println("Process exited with status {}", stop.status);
+                return stop;
+            }
+            case StopReason::signaled: {
+                std::println("Process terminated by signal {}", signal_name(stop.signal_number));
+                return stop;
+            }
+            case StopReason::stopped: {
+                break;
             }
         }
-    }
-}
+        if (!stop.signal_info) {
+            return stop;
+        }
+        switch (stop.signal_info->si_signo) {
+            case SIGTRAP: {
+                handle_sigtrap(*stop.signal_info);
+                break;
+            }
+            case SIGSEGV: {
+                std::println("Segfault. Reason: {}", stop.signal_info->si_code);
+                break;
+            }
+            default: {
+                std::println("Got signal {}", signal_name(stop.signal_info->si_signo));
+            }
+        }
 
-bool is_suffix(const std::string& s, const std::string& of) {
-    if (s.size() > of.size()) {
-        return false;
+        return stop;
     }
-    auto diff = of.size() - s.size();
-    return std::equal(s.begin(), s.end(), of.begin() + diff);
-}
 
-void Debugger::set_breakpoint_at_source_line(const std::string& file, unsigned line)
-{
-    for (const auto& compilation_unit : m_dwarf.compilation_units()) {
-        if (is_suffix(file, at_name(compilation_unit.root()))) {
-            const auto& lt = compilation_unit.get_line_table();
-            for (const auto& entry : lt) {
-                if (entry.is_stmt && entry.line == line) {
-                    set_breakpoint_at_address(offset_dwarf_address(entry.address));
+    void Debugger::initialise_load_address() {
+        if (!m_debug_info.is_dynamic()) {
+            return;
+        }
+        std::ifstream map("/proc/" + std::to_string(m_tracee.pid()) + "/maps");
+        if (!map) {
+            throw std::runtime_error("Cannot open process maps");
+        }
+        std::string address;
+        std::getline(map, address, '-');
+        m_load_address = RuntimeAddress{std::stoull(address, nullptr, 16)};
+    }
+
+    DwarfAddress Debugger::to_dwarf_address(RuntimeAddress address) const {
+        return DwarfAddress{address.value - m_load_address.value};
+    }
+
+    RuntimeAddress Debugger::to_runtime_address(DwarfAddress address) const {
+        return RuntimeAddress{address.value + m_load_address.value};
+    }
+
+    DwarfAddress Debugger::offset_program_counter() const {
+        return to_dwarf_address(m_tracee.program_counter());
+    }
+
+    void Debugger::print_source(std::string_view file_name, unsigned line, unsigned n_lines_context) {
+        std::ifstream file{std::string{file_name}};
+
+        auto start_line = line <= n_lines_context ? 1 : line - n_lines_context;
+        auto end_line = line + n_lines_context + (line < n_lines_context ? n_lines_context - line : 0) + 1;
+        char c{};
+        auto current_line = 1u;
+
+        while (current_line != start_line && file.get(c)) {
+            if (c == '\n') {
+                ++current_line;
+            }
+        }
+
+        std::print("{}", current_line == line ? "> " : " ");
+
+        while (current_line <= end_line && file.get(c)) {
+            std::print("{}", c);
+            if (c == '\n') {
+                ++current_line;
+                std::print("{}", current_line == line ? "> " : " ");
+            }
+        }
+
+        std::println("");
+    }
+
+    void Debugger::handle_sigtrap(siginfo_t info) {
+        switch (info.si_code) {
+            case 0: {
+                return;
+            }
+            case SI_KERNEL:
+            case TRAP_BRKPT: {
+                auto breakpoint_address = RuntimeAddress{m_tracee.program_counter().value - 1};
+                if (!m_breakpoints.contains(breakpoint_address)) {
                     return;
                 }
+
+                m_tracee.set_program_counter(breakpoint_address);
+                std::println("Hit breakpoint at address 0x{:x}", m_tracee.program_counter().value);
+                print_source_from_program_counter(m_tracee.program_counter());
+                return;
             }
-        }
-    }
-}
-
-symbol_type to_symbol_type(elf::stt _symbol)
-{
-    switch (_symbol) {
-        case elf::stt::notype: {
-            return symbol_type::notype;
-        }
-        case elf::stt::object: {
-            return symbol_type::object;
-        }
-        case elf::stt::func: {
-            return symbol_type::func;
-        }
-        case elf::stt::section: {
-            return symbol_type::section;
-        }
-        case elf::stt::file: {
-            return symbol_type::file;
-        }
-        default:
-            return symbol_type::notype;
-    }
-}
-
-std::vector<symbol> Debugger::lookup_symbol(const std::string& name)
-{
-    std::vector<symbol> symbols;
-    for (auto& section : m_elf.sections()) {
-        if (1) {
-            continue;
-        }
-        for (auto _symbol : section.as_symtab()) {
-            if (_symbol.get_name() == name) {
-                auto& d = _symbol.get_data();
-                symbols.push_back(symbol{to_symbol_type(d.type()), _symbol.get_name(), d.value});
+            case TRAP_TRACE: {
+                return;
+            }
+            default: {
+                std::println("Unknown SIGTRAP code {}", info.si_code);
+                return;
             }
         }
     }
 
-    return symbols;
-}
+    void Debugger::print_source_from_program_counter(RuntimeAddress program_counter) {
+        auto location = m_debug_info.source_location(to_dwarf_address(program_counter));
+        if (!location) {
+            std::println("No source line entry for address 0x{:x}", program_counter.value);
+            return;
+        }
 
-void Debugger::print_backtrace()
-{
-    auto output_frame = [frame_number = 0] (auto&& func) mutable {
-        std::cout
-            << "frame #"
-            << frame_number++
-            << ": 0x"
-            << dwarf::at_low_pc(func)
-            << " "
-            << dwarf::at_name(func)
-            << std::endl;
-    };
-    auto current_func = get_function_from_program_counter(get_program_counter());
-    output_frame(current_func);
-    auto frame_pointer = get_register_value(m_process_id, Register::rbp);
-    auto return_address = read_memory(frame_pointer + 8);
-    while (dwarf::at_name(current_func) != "main") {
-        current_func = get_function_from_program_counter(return_address);
+        print_source(location->file, location->line);
+    }
+
+    void Debugger::single_step_instruction() {
+        m_tracee.single_step();
+        wait_for_signal();
+    }
+
+    void Debugger::single_step_instruction_with_breakpoint_check() {
+        if (m_breakpoints.contains(m_tracee.program_counter())) {
+            step_over_breakpoint();
+        } else {
+            single_step_instruction();
+        }
+    }
+
+    void Debugger::step_over_breakpoint() {
+        auto it = m_breakpoints.find(m_tracee.program_counter());
+        if (it == m_breakpoints.end() || !it->second.is_enabled()) {
+            return;
+        }
+
+        it->second.disable();
+        m_tracee.single_step();
+        wait_for_signal();
+        it->second.enable();
+    }
+
+    void Debugger::step_out() {
+        auto frame_pointer = m_tracee.read_register(Register::rbp);
+        auto return_address = RuntimeAddress{m_tracee.read_word(RuntimeAddress{frame_pointer + 8})};
+        bool should_remove_breakpoint = false;
+
+        if (!m_breakpoints.contains(return_address)) {
+            set_breakpoint_at_address(return_address);
+            should_remove_breakpoint = true;
+        }
+
+        continue_execution();
+
+        if (should_remove_breakpoint) {
+            remove_breakpoint(return_address);
+        }
+    }
+
+    void Debugger::remove_breakpoint(RuntimeAddress address) {
+        auto it = m_breakpoints.find(address);
+        if (it == m_breakpoints.end()) {
+            return;
+        }
+
+        if (it->second.is_enabled()) {
+            it->second.disable();
+        }
+
+        m_breakpoints.erase(it);
+    }
+
+    void Debugger::step_in() {
+        auto line = m_debug_info.line_entry_from_pc(offset_program_counter())->line;
+
+        while (m_debug_info.line_entry_from_pc(offset_program_counter())->line == line) {
+            single_step_instruction_with_breakpoint_check();
+        }
+
+        print_source_from_program_counter(m_tracee.program_counter());
+    }
+
+    void Debugger::step_over() {
+        auto func = m_debug_info.function_from_pc(offset_program_counter());
+        auto func_entry = DwarfAddress{at_low_pc(func)};
+        auto func_end = DwarfAddress{at_high_pc(func)};
+        auto line = m_debug_info.line_entry_from_pc(func_entry);
+        auto start_line = m_debug_info.line_entry_from_pc(offset_program_counter());
+        std::vector<RuntimeAddress> to_delete;
+
+        while (line->address < func_end.value) {
+            auto load_address = to_runtime_address(DwarfAddress{line->address});
+            if (line->address != start_line->address && !m_breakpoints.contains(load_address)) {
+                set_breakpoint_at_address(load_address);
+                to_delete.push_back(load_address);
+            }
+            ++line;
+        }
+
+        auto frame_pointer = m_tracee.read_register(Register::rbp);
+        auto return_address = RuntimeAddress{m_tracee.read_word(RuntimeAddress{frame_pointer + 8})};
+        if (!m_breakpoints.contains(return_address)) {
+            set_breakpoint_at_address(return_address);
+            to_delete.push_back(return_address);
+        }
+
+        continue_execution();
+
+        for (auto address : to_delete) {
+            remove_breakpoint(address);
+        }
+    }
+
+    void Debugger::set_breakpoint_at_function(std::string_view name) {
+        for (auto address : m_debug_info.function_breakpoints(name)) {
+            set_breakpoint_at_address(to_runtime_address(address));
+        }
+    }
+
+    void Debugger::set_breakpoint_at_source_line(std::string_view file, unsigned line) {
+        auto address = m_debug_info.source_line_breakpoint(file, line);
+        if (!address) {
+            std::println("No source line entry for {}:{}", file, line);
+            return;
+        }
+
+        set_breakpoint_at_address(to_runtime_address(*address));
+    }
+
+    void Debugger::print_backtrace() {
+        auto output_frame = [frame_number = 0] (auto&& func) mutable {
+            std::println(
+                    "frame #{}: 0x{:x} {}",
+                    frame_number++,
+                    dwarf::at_low_pc(func),
+                    dwarf::at_name(func)
+            );
+        };
+
+        auto current_func = m_debug_info.function_from_pc(offset_program_counter());
         output_frame(current_func);
-        frame_pointer = read_memory(frame_pointer);
-        return_address = read_memory(frame_pointer + 8);
+
+        auto frame_pointer = m_tracee.read_register(Register::rbp);
+        auto return_address = RuntimeAddress{m_tracee.read_word(RuntimeAddress{frame_pointer + 8})};
+        while (dwarf::at_name(current_func) != "main") {
+            current_func = m_debug_info.function_from_pc(to_dwarf_address(return_address));
+            output_frame(current_func);
+            frame_pointer = m_tracee.read_word(RuntimeAddress{frame_pointer});
+            return_address = RuntimeAddress{m_tracee.read_word(RuntimeAddress{frame_pointer + 8})};
+        }
     }
-}
 
-class ptrace_expr_context : public dwarf::expr_context {
-    public:
-        ptrace_expr_context(pid_t process_id) : m_process_id{process_id} {}
+    class ptrace_expr_context : public dwarf::expr_context {
+        public:
+            explicit ptrace_expr_context(const Tracee& tracee) : m_tracee{tracee} {}
 
-        dwarf::taddr reg(unsigned reg_num) override 
-        {
-            struct user_regs_struct regs;
-            ptrace(PTRACE_GETREGS, m_process_id, nullptr, &regs);
-            return regs.rip;
-        }
+            dwarf::taddr reg(unsigned reg_num) override {
+                return m_tracee.read_dwarf_register(reg_num);
+            }
 
-        dwarf::taddr deref_size(dwarf::taddr address, unsigned size) override
-        {
-            // TODO take into account size
-            return ptrace(PTRACE_PEEKDATA, m_process_id, address, nullptr);
-        }
+            dwarf::taddr deref_size(dwarf::taddr address, unsigned size) override {
+                auto data = m_tracee.read_word(RuntimeAddress{address});
+                if (size >= sizeof(data)) {
+                    return data;
+                }
+                return data & ((1ULL << (size * 8)) - 1);
+            }
 
-    private:
-        pid_t m_process_id;
-};
+        private:
+            const Tracee& m_tracee;
+    };
 
-void Debugger::read_variables()
-{
-    using namespace dwarf;
+    void Debugger::read_variables() {
+        using namespace dwarf;
 
-    auto func = get_function_from_program_counter(get_offset_program_counter());
-    for (const auto& die : func) {
-        if (die.tag == DW_TAG::variable) {
+        auto func = m_debug_info.function_from_pc(offset_program_counter());
+        for (const auto& die : func) {
+            if (die.tag != DW_TAG::variable) {
+                continue;
+            }
+
             auto loc_val = die[DW_AT::location];
-            if (loc_val.get_type() == value::type::exprloc) {
-                ptrace_expr_context context {m_process_id};
-                auto result = loc_val.as_exprloc().evaluate(&context);
-                switch (result.location_type) {
-                    case expr_result::type::address: {
-                        auto value = read_memory(result.value);
-                        std::cout
-                            << at_name(die)
-                            << "(0x"
-                            << std::hex
-                            << result.value
-                            << ") ="
-                            << value
-                            << std::endl;
-                    }
-                    case expr_result::type::reg: {
-                        auto value = get_register_value_from_dwarf_register(m_process_id, result.value);
-                        std::cout
-                            << at_name(die)
-                            << " (reg "
-                            << result.value
-                            << ") = "
-                            << value
-                            << std::endl;
-                        break;
-                    }
-                    default: {
-                        throw std::runtime_error("Unhandled variable location");
-                    }
+            if (loc_val.get_type() != value::type::exprloc) {
+                continue;
+            }
+
+            ptrace_expr_context context{m_tracee};
+            auto result = loc_val.as_exprloc().evaluate(&context);
+            switch (result.location_type) {
+                case expr_result::type::address: {
+                    auto value = m_tracee.read_word(RuntimeAddress{result.value});
+                    std::println("{}(0x{:x}) ={}", at_name(die), result.value, value);
+                    break;
+                }
+                case expr_result::type::reg: {
+                    auto value = m_tracee.read_dwarf_register(result.value);
+                    std::println("{} (reg {}) = {}", at_name(die), result.value, value);
+                    break;
+                }
+                default: {
+                    throw std::runtime_error("Unhandled variable location");
                 }
             }
         }
